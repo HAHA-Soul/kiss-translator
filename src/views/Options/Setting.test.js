@@ -7,11 +7,13 @@ import Settings, {
   ExtCommands,
 } from "./Setting";
 import UploadButton from "./UploadButton";
+import DownloadButton from "./DownloadButton";
 import { OPT_TRANS_GEMINI, SETTINGS_VERSION_V1 } from "../../config";
 import { browser } from "../../libs/browser";
 import { useAlert } from "../../hooks/Alert";
 import { useSetting } from "../../hooks/Setting";
 import { useFab } from "../../hooks/Fab";
+import { useRules } from "../../hooks/Rules";
 import { useShortcut } from "../../hooks/Shortcut";
 import { tryClearCaches } from "../../libs/cache";
 import {
@@ -56,6 +58,7 @@ jest.mock("../../libs/clipboard", () => ({
 jest.mock("../../hooks/Shortcut", () => ({ useShortcut: jest.fn() }));
 jest.mock("./ShortcutInput", () => () => null);
 jest.mock("../../hooks/Fab", () => ({ useFab: jest.fn() }));
+jest.mock("../../hooks/Rules", () => ({ useRules: jest.fn() }));
 jest.mock("../../libs/msg", () => ({ sendBgMsg: jest.fn() }));
 jest.mock("../../libs/cache", () => ({ tryClearCaches: jest.fn() }));
 jest.mock("../../libs/log", () =>
@@ -67,7 +70,7 @@ jest.mock("../../libs/log", () =>
   )
 );
 jest.mock("./UploadButton", () => jest.fn(() => null));
-jest.mock("./DownloadButton", () => () => null);
+jest.mock("./DownloadButton", () => jest.fn(() => null));
 jest.mock("../../hooks/ValidationInput", () => () => null);
 jest.mock("./OverviewHero", () => () => null);
 
@@ -85,6 +88,10 @@ const alert = {
   warning: jest.fn(),
 };
 const originalUserAgent = navigator.userAgent;
+
+beforeEach(() => {
+  useRules.mockReturnValue({ list: [], merge: jest.fn() });
+});
 
 function setUserAgent(userAgent) {
   Object.defineProperty(navigator, "userAgent", {
@@ -228,16 +235,116 @@ describe("Settings cache feedback", () => {
   );
 });
 
-describe("Settings backup import", () => {
+describe("Settings backup export/import", () => {
+  const currentSetting = {
+    version: 3,
+    uiLang: "zh",
+    logLevel: 3,
+    clearCache: false,
+  };
+
+  test("exports settings, FAB preferences and rules together", async () => {
+    browser.commands.getAll.mockResolvedValue([]);
+    useAlert.mockReturnValue(alert);
+    const fab = { isHide: true, halfHide: false, opacity: 0.4, size: 32 };
+    const ruleList = [{ pattern: "*", transOnly: "true" }];
+    useSetting.mockReturnValue({
+      setting: currentSetting,
+      updateSetting: jest.fn(),
+    });
+    useFab.mockReturnValue({ fab, updateFab: jest.fn() });
+    useRules.mockReturnValue({ list: ruleList, merge: jest.fn() });
+    const { root } = await renderSettings();
+
+    try {
+      const { handleData } = DownloadButton.mock.calls.at(-1)[0];
+      const exported = JSON.parse(await handleData());
+
+      expect(exported).toEqual({
+        setting: currentSetting,
+        fab,
+        rules: ruleList,
+      });
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  test("restores FAB preferences and rules from a combined backup", async () => {
+    browser.commands.getAll.mockResolvedValue([]);
+    useAlert.mockReturnValue(alert);
+    const updateSetting = jest.fn();
+    const updateFab = jest.fn();
+    const merge = jest.fn();
+    useSetting.mockReturnValue({ setting: currentSetting, updateSetting });
+    useFab.mockReturnValue({ fab: {}, updateFab });
+    useRules.mockReturnValue({ list: [], merge });
+    const importedSetting = { darkMode: true, uiLang: "en" };
+    const importedFab = { isHide: true, opacity: 0.4 };
+    const importedRules = [{ pattern: "*", transOnly: "true" }];
+    const { root } = await renderSettings();
+
+    try {
+      const { handleImport } = UploadButton.mock.calls.at(-1)[0];
+      await handleImport(
+        JSON.stringify({
+          setting: importedSetting,
+          fab: importedFab,
+          rules: importedRules,
+        })
+      );
+
+      expect(updateSetting).toHaveBeenCalledWith({
+        ...importedSetting,
+        version: SETTINGS_VERSION_V1,
+      });
+      expect(updateFab).toHaveBeenCalledWith(importedFab);
+      expect(merge).toHaveBeenCalledWith(importedRules);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  test("ignores malformed FAB and rule payloads in a combined backup", async () => {
+    browser.commands.getAll.mockResolvedValue([]);
+    useAlert.mockReturnValue(alert);
+    const updateSetting = jest.fn();
+    const updateFab = jest.fn();
+    const merge = jest.fn();
+    useSetting.mockReturnValue({ setting: currentSetting, updateSetting });
+    useFab.mockReturnValue({ fab: {}, updateFab });
+    useRules.mockReturnValue({ list: [], merge });
+    const { root } = await renderSettings();
+
+    try {
+      const { handleImport } = UploadButton.mock.calls.at(-1)[0];
+      await handleImport(
+        JSON.stringify({ setting: { uiLang: "en" }, fab: [], rules: "bad" })
+      );
+
+      expect(updateSetting).toHaveBeenCalledWith({
+        uiLang: "en",
+        version: SETTINGS_VERSION_V1,
+      });
+      expect(updateFab).not.toHaveBeenCalled();
+      expect(merge).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   test("identifies a versionless JSON backup as V1 while preserving its fields", async () => {
     browser.commands.getAll.mockResolvedValue([]);
     useAlert.mockReturnValue(alert);
     const updateSetting = jest.fn();
+    const updateFab = jest.fn();
+    const merge = jest.fn();
     useSetting.mockReturnValue({
-      setting: { version: 3, uiLang: "zh", logLevel: 3, clearCache: false },
+      setting: currentSetting,
       updateSetting,
     });
-    useFab.mockReturnValue({ fab: {}, updateFab: jest.fn() });
+    useFab.mockReturnValue({ fab: {}, updateFab });
+    useRules.mockReturnValue({ list: [], merge });
     UploadButton.mockClear();
     const imported = {
       darkMode: true,
@@ -264,6 +371,8 @@ describe("Settings backup import", () => {
         ...imported,
         version: SETTINGS_VERSION_V1,
       });
+      expect(updateFab).not.toHaveBeenCalled();
+      expect(merge).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
     }

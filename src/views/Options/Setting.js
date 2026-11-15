@@ -45,6 +45,7 @@ import {
 import { useShortcut } from "../../hooks/Shortcut";
 import ShortcutInput from "./ShortcutInput";
 import { useFab } from "../../hooks/Fab";
+import { useRules } from "../../hooks/Rules";
 import {
   FAB_CLICK_ACTION_MENU,
   FAB_CLICK_ACTION_TRANSLATE,
@@ -232,6 +233,8 @@ export default function Settings() {
   const alert = useAlert();
   // 悬浮查词 FAB 浮球设置 Hook
   const { fab, updateFab } = useFab();
+  // 网页翻译规则 Hook（含全局规则的“仅显示译文”等配置）
+  const rules = useRules();
 
   // 基础表单输入状态更改回调
   const handleChange = (e) => {
@@ -266,10 +269,33 @@ export default function Settings() {
   };
 
   // Resolve the backup schema before merging with the current settings.
+  // 新版备份格式为 { setting, fab, rules }；旧版为扁平的设置对象。
   const handleImport = async (data) => {
     try {
       const imported = JSON.parse(data);
-      updateSetting({ ...imported, version: getSettingVersion(imported) });
+      const isCombinedBackup =
+        imported &&
+        typeof imported === "object" &&
+        !Array.isArray(imported) &&
+        imported.setting &&
+        typeof imported.setting === "object";
+      const importedSetting = isCombinedBackup ? imported.setting : imported;
+      await updateSetting({
+        ...importedSetting,
+        version: getSettingVersion(importedSetting),
+      });
+      if (isCombinedBackup) {
+        if (
+          imported.fab &&
+          typeof imported.fab === "object" &&
+          !Array.isArray(imported.fab)
+        ) {
+          await updateFab(imported.fab);
+        }
+        if (Array.isArray(imported.rules)) {
+          await rules.merge(imported.rules);
+        }
+      }
     } catch (err) {
       logger.child("options").error("import setting", err);
     }
@@ -326,7 +352,9 @@ export default function Settings() {
         >
           <UploadButton text={i18n("import")} handleImport={handleImport} />
           <DownloadButton
-            handleData={() => JSON.stringify(setting, null, 2)}
+            handleData={() =>
+              JSON.stringify({ setting, fab, rules: rules.list }, null, 2)
+            }
             text={i18n("export")}
             fileName={`kiss-setting_v2_${Date.now()}.json`}
           />
